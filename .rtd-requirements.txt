@@ -1,3 +1,1 @@
-markupsafe
-sphinxcontrib-napoleon==0.2.9
-pytables
+sphinxcontrib-napoleon==0.2.11

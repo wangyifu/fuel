@@ -1,30 +1,64 @@
-from numpy.testing import assert_raises
-from six.moves import cPickle
+import hashlib
+import os
 
+from numpy.testing import assert_raises, assert_equal
+
+from fuel import config
 from fuel.datasets import BinarizedMNIST
 from tests import skip_if_not_available
 
 
-def test_mnist():
-    skip_if_not_available(datasets=['binarized_mnist'])
-    mnist_train = BinarizedMNIST('train')
-    assert len(mnist_train.features) == 50000
-    assert mnist_train.num_examples == 50000
-    mnist_valid = BinarizedMNIST('valid')
-    assert len(mnist_valid.features) == 10000
-    assert mnist_valid.num_examples == 10000
-    mnist_test = BinarizedMNIST('test')
-    assert len(mnist_test.features) == 10000
-    assert mnist_test.num_examples == 10000
+def test_binarized_mnist_train():
+    skip_if_not_available(datasets=['binarized_mnist.hdf5'])
 
-    first_feature, = mnist_train.get_data(request=[0])
-    assert first_feature.shape == (1, 784)
-    assert first_feature.dtype.kind == 'f'
+    dataset = BinarizedMNIST('train', load_in_memory=False)
+    handle = dataset.open()
+    data, = dataset.get_data(handle, slice(0, 10))
+    assert data.dtype == 'uint8'
+    assert data.shape == (10, 1, 28, 28)
+    assert hashlib.md5(data).hexdigest() == '0922fefc9a9d097e3b086b89107fafce'
+    assert dataset.num_examples == 50000
+    dataset.close(handle)
 
+
+def test_binarized_mnist_valid():
+    skip_if_not_available(datasets=['binarized_mnist.hdf5'])
+
+    dataset = BinarizedMNIST('valid', load_in_memory=False)
+    handle = dataset.open()
+    data, = dataset.get_data(handle, slice(0, 10))
+    assert data.dtype == 'uint8'
+    assert data.shape == (10, 1, 28, 28)
+    assert hashlib.md5(data).hexdigest() == '65e8099613162b3110a7618037011617'
+    assert dataset.num_examples == 10000
+    dataset.close(handle)
+
+
+def test_binarized_mnist_test():
+    skip_if_not_available(datasets=['binarized_mnist.hdf5'])
+
+    dataset = BinarizedMNIST('test', load_in_memory=False)
+    handle = dataset.open()
+    data, = dataset.get_data(handle, slice(0, 10))
+    assert data.dtype == 'uint8'
+    assert data.shape == (10, 1, 28, 28)
+    assert hashlib.md5(data).hexdigest() == '0fa539ed8cb008880a61be77f744f06a'
+    assert dataset.num_examples == 10000
+    dataset.close(handle)
+
+
+def test_binarized_mnist_axes():
+    skip_if_not_available(datasets=['binarized_mnist.hdf5'])
+
+    dataset = BinarizedMNIST('train', load_in_memory=False)
+    assert_equal(dataset.axis_labels['features'],
+                 ('batch', 'channel', 'height', 'width'))
+
+
+def test_binarized_mnist_invalid_split():
     assert_raises(ValueError, BinarizedMNIST, 'dummy')
 
-    mnist_test = cPickle.loads(cPickle.dumps(mnist_test))
-    assert len(mnist_test.features) == 10000
 
-    mnist_test_unflattened = BinarizedMNIST('test', flatten=False)
-    assert mnist_test_unflattened.features.shape == (10000, 28, 28)
+def test_binarized_mnist_data_path():
+    assert BinarizedMNIST('train').data_path == os.path.join(
+        config.data_path, 'binarized_mnist.hdf5')

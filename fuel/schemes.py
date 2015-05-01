@@ -111,7 +111,7 @@ class ConstantScheme(BatchSizeScheme):
         The size of the batch to return.
     num_examples : int, optional
         If given, the request iterator will return `batch_size` until the
-        sum reaches `num_exam;pes`. Note that this means that the last
+        sum reaches `num_examples`. Note that this means that the last
         batch size returned could be smaller than `batch_size`. If you want
         to ensure all batches are of equal size, then pass `times` equal to
         ``num_examples / batch-size`` instead.
@@ -156,6 +156,12 @@ class ShuffledScheme(BatchScheme):
     Iterate over all the examples in a dataset of fixed size in shuffled
     batches.
 
+    Parameters
+    ----------
+    sorted_indices : bool, optional
+        If `True`, enforce that indices within a batch are ordered.
+        Defaults to `False`.
+
     Notes
     -----
     The batch size isn't enforced, so the last batch could be smaller.
@@ -169,12 +175,16 @@ class ShuffledScheme(BatchScheme):
         self.rng = kwargs.pop('rng', None)
         if self.rng is None:
             self.rng = numpy.random.RandomState(config.default_seed)
+        self.sorted_indices = kwargs.pop('sorted_indices', False)
         super(ShuffledScheme, self).__init__(*args, **kwargs)
 
     def get_request_iterator(self):
         indices = list(self.indices)
         self.rng.shuffle(indices)
-        return imap(list, partition_all(self.batch_size, indices))
+        if self.sorted_indices:
+            return imap(sorted, partition_all(self.batch_size, indices))
+        else:
+            return imap(list, partition_all(self.batch_size, indices))
 
 
 class SequentialExampleScheme(IndexScheme):
