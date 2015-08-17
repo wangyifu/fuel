@@ -5,10 +5,14 @@ cache:
 branches:
   only:
     - master
+    - stable
 language: python
 python:
   - "2.7"
   - "3.4"
+env:
+  - TESTS=fuel
+  - TESTS=blocks
 before_install:
   # Setup Python environment with BLAS libraries
   - wget -q http://repo.continuum.io/miniconda/Miniconda-latest-Linux-x86_64.sh -O miniconda.sh
@@ -16,57 +20,45 @@ before_install:
   - ./miniconda.sh -b
   - export PATH=$HOME/miniconda/bin:$PATH
   - conda update -q --yes conda
-  # Download MNIST for tests if not loaded from cache
-  - |
-      if [ ! -d $TRAVIS_BUILD_DIR/data/mnist ]; then
-        mkdir $TRAVIS_BUILD_DIR/data/mnist
-      fi
-  - |
-      if find $TRAVIS_BUILD_DIR/data/mnist -empty | read; then
-        cd $TRAVIS_BUILD_DIR/data/mnist
-        curl -O http://yann.lecun.com/exdb/mnist/train-images-idx3-ubyte.gz \
-             -O http://yann.lecun.com/exdb/mnist/train-labels-idx1-ubyte.gz \
-             -O http://yann.lecun.com/exdb/mnist/t10k-images-idx3-ubyte.gz \
-             -O http://yann.lecun.com/exdb/mnist/t10k-labels-idx1-ubyte.gz
-        gunzip *-ubyte.gz
-        cd -
-      fi
-    # Download CIFAR10 for tests if not loaded from cache
-  - |
-      if [ ! -d $TRAVIS_BUILD_DIR/data/cifar10 ]; then
-        mkdir $TRAVIS_BUILD_DIR/data/cifar10
-      fi
-  - |
-      if find $TRAVIS_BUILD_DIR/data/cifar10 -empty | read; then
-        cd $TRAVIS_BUILD_DIR/data/cifar10
-        curl http://www.cs.utoronto.ca/~kriz/cifar-10-python.tar.gz | tar xzf -
-        cd -
-      fi
   - export FUEL_DATA_PATH=$TRAVIS_BUILD_DIR/data
 install:
   # Install all Python dependencies
-  - conda install -q --yes python=$TRAVIS_PYTHON_VERSION mkl bokeh nose numpy pip coverage six toolz pytables h5py
-  - pip install -q coveralls
-script:
-  - pip install . -r requirements.txt
-  # Download and process binarized MNIST for tests if not loaded from cache
   - |
-      if [ ! -f $FUEL_DATA_PATH/binarized_mnist.hdf5 ]; then
-        cd $FUEL_DATA_PATH
-        fuel-download binarized_mnist
-        fuel-convert binarized_mnist
-        fuel-download --clear binarized_mnist
-        cd -
+      if [[ $TESTS == 'blocks' ]]; then
+        curl -O https://raw.githubusercontent.com/mila-udem/blocks/$TRAVIS_BRANCH/req-travis-conda.txt
+        conda install -q --yes python=$TRAVIS_PYTHON_VERSION mkl --file req-travis-conda.txt
+        pip install -r https://raw.githubusercontent.com/mila-udem/blocks/$TRAVIS_BRANCH/req-travis-pip.txt
+        pip install . -r requirements.txt
+        python setup.py build_ext --inplace
+        pip install -e git+git://github.com/mila-udem/blocks.git@$TRAVIS_BRANCH#egg=blocks --src=$HOME -r https://raw.githubusercontent.com/mila-udem/blocks/$TRAVIS_BRANCH/requirements.txt
       fi
-  # With Fuel installed we can install Blocks
-  - pip install -e git+git://github.com/bartvm/blocks.git#egg=blocks[test,plot] --src=$HOME -r https://raw.githubusercontent.com/bartvm/blocks/master/requirements.txt
-  # Run the Blocks test to make sure we didn't break anything
-  - bokeh-server &> /dev/null &
-  - nose2 tests --start-dir $HOME/blocks
-  - nose2 doctests --start-dir $HOME/blocks
-  # Running nose2 within coverage makes imports count towards coverage
-  - coverage run -p --source=fuel -m nose2.__main__ -v tests
-  - coverage run -p --source=fuel -m nose2.__main__ -v doctests
+  - |
+      if [[ $TESTS == 'fuel' ]]; then
+        conda install -q --yes python=$TRAVIS_PYTHON_VERSION mkl --file req-travis-conda.txt
+        pip install -r req-travis-pip.txt
+        pip install . -r requirements.txt
+        python setup.py build_ext --inplace
+      fi
+script:
+  - ./.travis-data.sh mnist binarized_mnist "caltech101_silhouettes 16" cifar10 cifar100 iris
+  - function fail { export FAILED=1; }
+  - |
+      if [[ $TESTS == 'blocks' ]]; then
+        bokeh-server &> /dev/null &
+        nose2 tests --start-dir $HOME/blocks || fail
+        nose2 doctests --start-dir $HOME/blocks || fail
+        return $FAILED
+      fi
+  - |
+      if [[ $TESTS == 'fuel' ]]; then
+        # Running nose2 within coverage makes imports count towards coverage
+        coverage run -p --source=fuel -m nose2.__main__ -v tests || fail
+        coverage run -p --source=fuel -m nose2.__main__ -v doctests || fail
+        return $FAILED
+      fi
 after_script:
-  - coverage combine
-  - coveralls
+  - |
+      if [[ $TESTS == 'fuel' ]]; then
+        coverage combine
+        coveralls
+      fi

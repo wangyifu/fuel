@@ -1,8 +1,8 @@
 Overview
 ========
 
-The data pipeline abstraction that Fuel povides looks complicated at first
-site, but can be very powerful powerful.
+The data pipeline abstraction that Fuel provides looks complicated at first
+sight, but can be very powerful.
 
 .. digraph:: datasets
    :caption: A simplified overview of the interactions between the different parts of the data-handling classes in Blocks. Dashed lines are optional.
@@ -16,7 +16,7 @@ site, but can be very powerful powerful.
    RequestIterator -> DataIterator [style=dashed, label=" Argument to"];
    DataIterator -> DataStream [label=" Gets data from"];
    DataStream -> DataStream [style=dashed, label=" Gets data from (wrapper)"];
-   { rank=same; RequestIterator, DataIterator }
+   { rank=same; RequestIterator DataIterator }
 
 Datasets
   Datasets provide an interface to the data we are trying to access. This data

@@ -1,9 +1,38 @@
 import os
-import shutil
+import sys
+from contextlib import contextmanager
 
-import certifi
-import urllib3
-from urllib3.util.url import parse_url
+import requests
+from progressbar import (ProgressBar, Percentage, Bar, ETA, FileTransferSpeed,
+                         Timer, UnknownLength)
+from six.moves import zip, urllib
+from ..exceptions import NeedURLPrefix
+
+
+@contextmanager
+def progress_bar(name, maxval):
+    """Manages a progress bar for a download.
+
+    Parameters
+    ----------
+    name : str
+        Name of the downloaded file.
+    maxval : int
+        Total size of the download, in bytes.
+
+    """
+    if maxval is not UnknownLength:
+        widgets = ['{}: '.format(name), Percentage(), ' ',
+                   Bar(marker='=', left='[', right=']'), ' ', ETA(), ' ',
+                   FileTransferSpeed()]
+    else:
+        widgets = ['{}: '.format(name), ' ', Timer(), ' ', FileTransferSpeed()]
+    bar = ProgressBar(widgets=widgets, maxval=maxval, fd=sys.stdout).start()
+    try:
+        yield bar
+    finally:
+        bar.update(maxval)
+        bar.finish()
 
 
 def filename_from_url(url, path=None):
@@ -15,19 +44,16 @@ def filename_from_url(url, path=None):
         URL to parse.
 
     """
-    http = urllib3.PoolManager(
-        cert_reqs='CERT_REQUIRED', ca_certs=certifi.where())
-    with http.request('GET', url, preload_content=False) as response:
-        headers = response.getheaders()
-        if 'Content-Disposition' in headers:
-            filename = headers[
-                'Content-Disposition'].split('filename=')[1].trim('"')
-        else:
-            filename = os.path.basename(parse_url(url).path)
+    r = requests.get(url, stream=True)
+    if 'Content-Disposition' in r.headers:
+        filename = r.headers[
+            'Content-Disposition'].split('filename=')[1].strip('"')
+    else:
+        filename = os.path.basename(urllib.parse.urlparse(url).path)
     return filename
 
 
-def download(url, file_handle):
+def download(url, file_handle, chunk_size=1024):
     """Downloads a given URL to a specific file.
 
     Parameters
@@ -38,32 +64,55 @@ def download(url, file_handle):
         Where to save the downloaded URL.
 
     """
-    http = urllib3.PoolManager(
-        cert_reqs='CERT_REQUIRED', ca_certs=certifi.where())
-    with http.request('GET', url, preload_content=False) as response:
-        shutil.copyfileobj(response, file_handle)
+    r = requests.get(url, stream=True)
+    total_length = r.headers.get('content-length')
+    if total_length is None:
+        maxval = UnknownLength
+    else:
+        maxval = int(total_length)
+    name = filename_from_url(url)
+    with progress_bar(name=name, maxval=maxval) as bar:
+        for i, chunk in enumerate(r.iter_content(chunk_size)):
+            bar.update(i * chunk_size)
+            file_handle.write(chunk)
 
 
-def default_downloader(args):
-    """Downloads or clears files from URLs and filenames.
-
-    This function takes an :class:`argparse.Namespace` instance as
-    argument and expects it to contain three attributes:
-
-    * `directory` : directory in which downloaded files are saved
-    * `urls` : list of URLs to download
-    * `filenames` : list of file names for the corresponding URLs
+def ensure_directory_exists(directory):
+    """Create directory (with parents) if does not exist, raise on failure.
 
     Parameters
     ----------
-    args : :class:`argparse.Namespace`
-        Parsed command line arguments
+    directory : str
+        The directory to create
 
     """
-    urls = args.urls
-    save_directory = args.directory
-    filenames = args.filenames
+    try:
+        os.makedirs(directory)
+    except OSError as e:
+        if e.errno != os.errno.EEXIST:
+            raise
 
+
+def default_downloader(directory, urls, filenames, url_prefix=None,
+                       clear=False):
+    """Downloads or clears files from URLs and filenames.
+
+    Parameters
+    ----------
+    directory : str
+        The directory in which downloaded files are saved.
+    urls : list
+        A list of URLs to download.
+    filenames : list
+        A list of file names for the corresponding URLs.
+    url_prefix : str, optional
+        If provided, this is prepended to filenames that
+        lack a corresponding URL.
+    clear : bool, optional
+        If `True`, delete the given filenames from the given
+        directory rather than download them.
+
+    """
     # Parse file names from URL if not provided
     for i, url in enumerate(urls):
         filename = filenames[i]
@@ -72,13 +121,20 @@ def default_downloader(args):
         if not filename:
             raise ValueError("no filename available for URL '{}'".format(url))
         filenames[i] = filename
-    files = [os.path.join(save_directory, f) for f in filenames]
+    files = [os.path.join(directory, f) for f in filenames]
 
-    if args.clear:
+    if clear:
         for f in files:
             if os.path.isfile(f):
                 os.remove(f)
     else:
-        for url, f in zip(urls, files):
+        print('Downloading ' + ', '.join(filenames) + '\n')
+        ensure_directory_exists(directory)
+
+        for url, f, n in zip(urls, files, filenames):
+            if not url:
+                if url_prefix is None:
+                    raise NeedURLPrefix
+                url = url_prefix + n
             with open(f, 'wb') as file_handle:
                 download(url, file_handle)

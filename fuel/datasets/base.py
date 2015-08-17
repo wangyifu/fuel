@@ -1,11 +1,13 @@
 import collections
 from abc import ABCMeta, abstractmethod
+
 from six import add_metaclass
 
 from picklable_itertools import iter_, izip
 
 from fuel.schemes import SequentialExampleScheme
 from fuel.streams import DataStream
+from fuel.utils import iterable_fancy_indexing
 
 
 @add_metaclass(ABCMeta)
@@ -21,6 +23,9 @@ class Dataset(object):
     sources : tuple of strings, optional
         The data sources to load and return by :meth:`get_data`. By default
         all data sources are returned.
+    axis_labels : dict, optional
+        Maps source names to tuples of strings describing axis semantics,
+        one per axis. Defaults to `None`, i.e. no information is available.
 
     Attributes
     ----------
@@ -45,8 +50,9 @@ class Dataset(object):
 
     """
     provides_sources = None
+    default_transformers = tuple()
 
-    def __init__(self, sources=None):
+    def __init__(self, sources=None, axis_labels=None):
         if not self.provides_sources:
             raise ValueError("dataset does not have `provides_sources`")
         if sources is not None:
@@ -54,6 +60,7 @@ class Dataset(object):
                                       for source in sources):
                 raise ValueError("unable to provide requested sources")
             self.sources = sources
+        self.axis_labels = axis_labels
 
     @property
     def sources(self):
@@ -64,6 +71,20 @@ class Dataset(object):
     @sources.setter
     def sources(self, sources):
         self._sources = sources
+
+    def apply_default_transformers(self, stream):
+        """Applies default transformers to a stream.
+
+        Parameters
+        ----------
+        stream : :class:`~.streams.AbstractDataStream`
+            A data stream.
+
+        """
+        for (cls, args, kwargs) in self.default_transformers:
+            args = [stream] + args
+            stream = cls(*args, **kwargs)
+        return stream
 
     @property
     def example_iteration_scheme(self):
@@ -97,6 +118,11 @@ class Dataset(object):
     def reset(self, state):
         """Resets the state.
 
+        Parameters
+        ----------
+        state : object
+            The current state.
+
         Returns
         -------
         state : object
@@ -118,6 +144,11 @@ class Dataset(object):
 
         The default implementation for this method is to reset the state.
 
+        Parameters
+        ----------
+        state : object
+            The current state.
+
         Returns
         -------
         state : object
@@ -127,7 +158,14 @@ class Dataset(object):
         return self.reset(state)
 
     def close(self, state):
-        """Cleanly close the dataset e.g. close file handles."""
+        """Cleanly close the dataset e.g. close file handles.
+
+        Parameters
+        ----------
+        state : object
+            The current state.
+
+        """
         pass
 
     @abstractmethod
@@ -156,7 +194,6 @@ class Dataset(object):
             A tuple of data matching the order of :attr:`sources`.
 
         """
-        raise NotImplementedError
 
     def filter_sources(self, data):
         """Filter the requested sources from those provided by the dataset.
@@ -175,8 +212,14 @@ class Dataset(object):
             The data from all the sources i.e. should be of the same length
             as :attr:`provides_sources`.
 
+        Returns
+        -------
+        tuple
+            A tuple of data matching :attr:`sources`.
+
         Examples
         --------
+        >>> import numpy
         >>> class Random(Dataset):
         ...     provides_sources = ('features', 'targets')
         ...     def get_data(self, state=None, request=None):
@@ -318,6 +361,13 @@ class IndexableDataset(Dataset):
             return self.indexables[self.sources.index(attr)]
         raise AttributeError
 
+    # Without explicitly defining a trivial __setstate__ method,
+    # the __getattribute__ method would call the __getattr__ method,
+    # which would raise an AttributeError. This causes problems
+    # when unpickling.
+    def __setstate__(self, dict):
+        self.__dict__ = dict
+
     @property
     def num_examples(self):
         return len(self.indexables[0])
@@ -325,4 +375,8 @@ class IndexableDataset(Dataset):
     def get_data(self, state=None, request=None):
         if state is not None or request is None:
             raise ValueError
-        return tuple(indexable[request] for indexable in self.indexables)
+        if isinstance(request, collections.Iterable):
+            return tuple(iterable_fancy_indexing(indexable, request)
+                         for indexable in self.indexables)
+        else:
+            return tuple(indexable[request] for indexable in self.indexables)

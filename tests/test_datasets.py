@@ -1,111 +1,136 @@
 from collections import OrderedDict
 
 import numpy
-import operator
-from six.moves import zip, range
-from nose.tools import assert_raises
+from numpy.testing import assert_raises, assert_equal
 from picklable_itertools import repeat
+from six.moves import zip, range, cPickle
 
-from fuel import config
-from fuel.datasets import IterableDataset, IndexableDataset
+from fuel.datasets import Dataset, IterableDataset, IndexableDataset
 from fuel.streams import DataStream
-from fuel.transformers import (Cache, Mapping, Batch, Padding, Filter,
-                               ForceFloatX, SortMapping)
-from fuel.schemes import BatchSizeScheme, ConstantScheme
-
-floatX = config.floatX
+from fuel.schemes import ShuffledScheme, BatchSizeScheme, ConstantScheme
+from fuel.transformers import Mapping
 
 
-def test_dataset():
-    data = [1, 2, 3]
-    # The default stream requests an example at a time
-    stream = DataStream(IterableDataset(data))
-    epoch = stream.get_epoch_iterator()
-    assert list(epoch) == list(zip(data))
+class TestDataset(object):
+    def setUp(self):
+        self.data = [1, 2, 3]
+        self.stream = DataStream(IterableDataset(self.data))
 
-    # Check if iterating over multiple epochs works
-    for i, epoch in zip(range(2), stream.iterate_epochs()):
-        assert list(epoch) == list(zip(data))
+    def test_one_example_at_a_time(self):
+        assert_equal(
+            list(self.stream.get_epoch_iterator()), list(zip(self.data)))
 
-    # Check whether the returning as a dictionary of sources works
-    assert next(stream.get_epoch_iterator(as_dict=True)) == {"data": 1}
+    def test_multiple_epochs(self):
+        for i, epoch in zip(range(2), self.stream.iterate_epochs()):
+            assert list(epoch) == list(zip(self.data))
 
+    def test_as_dict(self):
+        assert_equal(
+            next(self.stream.get_epoch_iterator(as_dict=True)), {"data": 1})
 
-def test_data_stream_mapping():
-    data = [1, 2, 3]
-    data_doubled = [2, 4, 6]
-    stream = DataStream(IterableDataset(data))
-    wrapper1 = Mapping(
-        stream, lambda d: (2 * d[0],))
-    assert list(wrapper1.get_epoch_iterator()) == list(zip(data_doubled))
-    wrapper2 = Mapping(
-        stream, lambda d: (2 * d[0],), add_sources=("doubled",))
-    assert wrapper2.sources == ("data", "doubled")
-    assert list(wrapper2.get_epoch_iterator()) == list(zip(data, data_doubled))
+    def test_value_error_on_no_provided_sources(self):
+        class FaultyDataset(Dataset):
+            def get_data(self, state=None, request=None):
+                pass
+        assert_raises(ValueError, FaultyDataset, self.data)
 
+    def test_value_error_on_nonexistent_sources(self):
+        def instantiate_dataset():
+            return IterableDataset(self.data, sources=('dummy',))
+        assert_raises(ValueError, instantiate_dataset)
 
-def test_data_stream_mapping_sort():
-    data = [[1, 2, 3],
-            [2, 3, 1],
-            [3, 2, 1]]
-    data_sorted = [[1, 2, 3]] * 3
-    data_sorted_rev = [[3, 2, 1]] * 3
-    stream = DataStream(IterableDataset(data))
-    wrapper1 = Mapping(stream, mapping=SortMapping(operator.itemgetter(0)))
-    assert list(wrapper1.get_epoch_iterator()) == list(zip(data_sorted))
-    wrapper2 = Mapping(stream, SortMapping(lambda x: -x[0]))
-    assert list(wrapper2.get_epoch_iterator()) == list(zip(data_sorted_rev))
-    wrapper3 = Mapping(stream, SortMapping(operator.itemgetter(0),
-                                           reverse=True))
-    assert list(wrapper3.get_epoch_iterator()) == list(zip(data_sorted_rev))
+    def test_default_transformer(self):
+        class DoublingDataset(IterableDataset):
+            def apply_default_transformer(self, stream):
+                return Mapping(
+                    stream, lambda sources: tuple(2 * s for s in sources))
+        dataset = DoublingDataset(self.data)
+        stream = dataset.apply_default_transformer(DataStream(dataset))
+        assert_equal(list(stream.get_epoch_iterator()), [(2,), (4,), (6,)])
 
+    def test_no_axis_labels(self):
+        assert IterableDataset(self.data).axis_labels is None
 
-def test_data_stream_mapping_sort_multisource_ndarrays():
-    data = OrderedDict()
-    data['x'] = [numpy.array([1, 2, 3]),
-                 numpy.array([2, 3, 1]),
-                 numpy.array([3, 2, 1])]
-    data['y'] = [numpy.array([6, 5, 4]),
-                 numpy.array([6, 5, 4]),
-                 numpy.array([6, 5, 4])]
-    data_sorted = [(numpy.array([1, 2, 3]), numpy.array([6, 5, 4])),
-                   (numpy.array([1, 2, 3]), numpy.array([4, 6, 5])),
-                   (numpy.array([1, 2, 3]), numpy.array([4, 5, 6]))]
-    stream = DataStream(IterableDataset(data))
-    wrapper = Mapping(stream, mapping=SortMapping(operator.itemgetter(0)))
-    for output, ground_truth in zip(wrapper.get_epoch_iterator(), data_sorted):
-        assert len(output) == len(ground_truth)
-        assert (output[0] == ground_truth[0]).all()
-        assert (output[1] == ground_truth[1]).all()
+    def test_axis_labels(self):
+        axis_labels = {'data': ('batch',)}
+        dataset = IterableDataset(self.data, axis_labels=axis_labels)
+        assert dataset.axis_labels == axis_labels
 
+    def test_attribute_error_on_no_example_iteration_scheme(self):
+        class FaultyDataset(Dataset):
+            provides_sources = ('data',)
 
-def test_data_stream_mapping_sort_multisource():
-    data = OrderedDict()
-    data['x'] = [[1, 2, 3], [2, 3, 1], [3, 2, 1]]
-    data['y'] = [[6, 5, 4], [6, 5, 4], [6, 5, 4]]
-    data_sorted = [([1, 2, 3], [6, 5, 4]),
-                   ([1, 2, 3], [4, 6, 5]),
-                   ([1, 2, 3], [4, 5, 6])]
-    stream = DataStream(IterableDataset(data))
-    wrapper = Mapping(stream, mapping=SortMapping(operator.itemgetter(0)))
-    assert list(wrapper.get_epoch_iterator()) == data_sorted
+            def get_data(self, state=None, request=None):
+                pass
 
+        def get_example_iteration_scheme():
+            return FaultyDataset().example_iteration_scheme
 
-def test_data_stream_filter():
-    data = [1, 2, 3]
-    data_filtered = [1, 3]
-    stream = DataStream(IterableDataset(data))
-    wrapper = Filter(stream, lambda d: d[0] % 2 == 1)
-    assert list(wrapper.get_epoch_iterator()) == list(zip(data_filtered))
+        assert_raises(AttributeError, get_example_iteration_scheme)
+
+    def test_example_iteration_scheme(self):
+        scheme = ConstantScheme(2)
+
+        class MinimalDataset(Dataset):
+            provides_sources = ('data',)
+            _example_iteration_scheme = scheme
+
+            def get_data(self, state=None, request=None):
+                pass
+
+        assert MinimalDataset().example_iteration_scheme is scheme
+
+    def test_filter_sources(self):
+        dataset = IterableDataset(
+            OrderedDict([('1', [1, 2]), ('2', [3, 4])]), sources=('1',))
+        assert_equal(dataset.filter_sources(([1, 2], [3, 4])), ([1, 2],))
 
 
-def test_floatx():
-    x = [numpy.array(d, dtype="float64") for d in [[1, 2], [3, 4], [5, 6]]]
-    y = [numpy.array(d, dtype="int64") for d in [1, 2, 3]]
-    dataset = IterableDataset(OrderedDict([("x", x), ("y", y)]))
-    data = next(ForceFloatX(DataStream(dataset)).get_epoch_iterator())
-    assert str(data[0].dtype) == floatX
-    assert str(data[1].dtype) == "int64"
+class TestIterableDataset(object):
+    def test_value_error_on_non_iterable_dict(self):
+        assert_raises(ValueError, IterableDataset, {'x': None, 'y': None})
+
+    def test_value_error_on_non_iterable(self):
+        assert_raises(ValueError, IterableDataset, None)
+
+    def test_value_error_get_data_none_state(self):
+        assert_raises(
+            ValueError, IterableDataset([1, 2, 3]).get_data, None, None)
+
+    def test_value_error_get_data_request(self):
+        assert_raises(
+            ValueError, IterableDataset([1, 2, 3]).get_data, [1, 2, 3], True)
+
+
+class TestIndexableDataset(object):
+    def test_getattr(self):
+        assert_equal(getattr(IndexableDataset({'a': (1, 2)}), 'a'), (1, 2))
+
+    def test_value_error_on_non_iterable(self):
+        assert_raises(ValueError, IterableDataset, None)
+
+    def test_value_error_get_data_state(self):
+        assert_raises(
+            ValueError, IndexableDataset([1, 2, 3]).get_data, True, [1, 2])
+
+    def test_value_error_get_data_none_request(self):
+        assert_raises(
+            ValueError, IndexableDataset([1, 2, 3]).get_data, None, None)
+
+    def test_pickling(self):
+        cPickle.loads(cPickle.dumps(IndexableDataset({'a': (1, 2)})))
+
+    def test_batch_iteration_scheme_with_lists(self):
+        """Batch schemes should work with more than ndarrays."""
+        data = IndexableDataset(OrderedDict([('foo', list(range(50))),
+                                             ('bar', list(range(1, 51)))]))
+        stream = DataStream(data,
+                            iteration_scheme=ShuffledScheme(data.num_examples,
+                                                            5))
+        returned = [sum(batches, []) for batches in
+                    zip(*list(stream.get_epoch_iterator()))]
+        assert set(returned[0]) == set(range(50))
+        assert set(returned[1]) == set(range(1, 51))
 
 
 def test_sources_selection():
@@ -126,6 +151,7 @@ def test_data_driven_epochs():
         sources = ('data',)
 
         def __init__(self):
+            self.axis_labels = None
             self.data = [[1, 2, 3, 4],
                          [5, 6, 7, 8]]
 
@@ -171,96 +197,6 @@ def test_data_driven_epochs():
     stream = DataStream(TestDataset(), iteration_scheme=TestScheme())
     for i, epoch in zip(range(2), stream.iterate_epochs()):
         assert list(epoch) == epochs[i]
-
-
-def test_cache():
-    dataset = IterableDataset(range(100))
-    stream = DataStream(dataset)
-    batched_stream = Batch(stream, ConstantScheme(11))
-    cached_stream = Cache(batched_stream, ConstantScheme(7))
-    epoch = cached_stream.get_epoch_iterator()
-
-    # Make sure that cache is filled as expected
-    for (features,), cache_size in zip(epoch, [4, 8, 1, 5, 9, 2,
-                                               6, 10, 3, 7, 0, 4]):
-        assert len(cached_stream.cache[0]) == cache_size
-
-    # Make sure that the epoch finishes correctly
-    for (features,) in cached_stream.get_epoch_iterator():
-        pass
-    assert len(features) == 100 % 7
-    assert not cached_stream.cache[0]
-
-    # Ensure that the epoch transition is correct
-    cached_stream = Cache(batched_stream, ConstantScheme(7, times=3))
-    for _, epoch in zip(range(2), cached_stream.iterate_epochs()):
-        cache_sizes = [4, 8, 1]
-        for i, (features,) in enumerate(epoch):
-            assert len(cached_stream.cache[0]) == cache_sizes[i]
-            assert len(features) == 7
-            assert numpy.all(list(range(100))[i * 7:(i + 1) * 7] == features)
-        assert i == 2
-
-
-def test_batch_data_stream():
-    stream = DataStream(IterableDataset([1, 2, 3, 4, 5]))
-    batches = list(Batch(stream, ConstantScheme(2))
-                   .get_epoch_iterator())
-    expected = [(numpy.array([1, 2]),),
-                (numpy.array([3, 4]),),
-                (numpy.array([5]),)]
-    assert len(batches) == len(expected)
-    for b, e in zip(batches, expected):
-        assert (b[0] == e[0]).all()
-
-    # Check the `strict` flag
-    def try_strict(strictness):
-        return list(
-            Batch(stream, ConstantScheme(2), strictness=strictness)
-            .get_epoch_iterator())
-    assert_raises(ValueError, try_strict, 2)
-    assert len(try_strict(1)) == 2
-    stream2 = DataStream(IterableDataset([1, 2, 3, 4, 5, 6]))
-    assert len(list(Batch(stream2, ConstantScheme(2), strictness=2)
-                    .get_epoch_iterator())) == 3
-
-
-def test_padding_data_stream():
-    # 1-D sequences
-    stream = Batch(
-        DataStream(IterableDataset([[1], [2, 3], [], [4, 5, 6], [7]])),
-        ConstantScheme(2))
-    mask_stream = Padding(stream)
-    assert mask_stream.sources == ("data", "data_mask")
-    it = mask_stream.get_epoch_iterator()
-    data, mask = next(it)
-    assert (data == numpy.array([[1, 0], [2, 3]])).all()
-    assert (mask == numpy.array([[1, 0], [1, 1]])).all()
-    data, mask = next(it)
-    assert (data == numpy.array([[0, 0, 0], [4, 5, 6]])).all()
-    assert (mask == numpy.array([[0, 0, 0], [1, 1, 1]])).all()
-    data, mask = next(it)
-    assert (data == numpy.array([[7]])).all()
-    assert (mask == numpy.array([[1]])).all()
-
-    # 2D sequences
-    stream2 = Batch(
-        DataStream(IterableDataset([numpy.ones((3, 4)),
-                                    2 * numpy.ones((2, 4))])),
-        ConstantScheme(2))
-    it = Padding(stream2).get_epoch_iterator()
-    data, mask = next(it)
-    assert data.shape == (2, 3, 4)
-    assert (data[0, :, :] == 1).all()
-    assert (data[1, :2, :] == 2).all()
-    assert (mask == numpy.array([[1, 1, 1], [1, 1, 0]])).all()
-
-    # 2 sources
-    stream3 = Padding(Batch(
-        DataStream(IterableDataset(dict(features=[[1], [2, 3]],
-                                        targets=[[4, 5, 6], [7]]))),
-        ConstantScheme(2)))
-    assert len(next(stream3.get_epoch_iterator())) == 4
 
 
 def test_num_examples():

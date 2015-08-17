@@ -1,32 +1,34 @@
 import numpy
 from numpy.testing import assert_raises
-from six.moves import cPickle
 
+from fuel import config
 from fuel.datasets import CIFAR10
+from fuel.streams import DataStream
+from fuel.schemes import SequentialScheme
 
 
 def test_cifar10():
-    cifar10_train = CIFAR10('train', start=20000)
-    assert len(cifar10_train.features) == 30000
-    assert len(cifar10_train.targets) == 30000
-    assert cifar10_train.num_examples == 30000
-    cifar10_test = CIFAR10('test', sources=('targets',))
-    assert len(cifar10_test.targets) == 10000
-    assert cifar10_test.num_examples == 10000
+    train = CIFAR10(('train',), load_in_memory=False)
+    assert train.num_examples == 50000
+    handle = train.open()
+    features, targets = train.get_data(handle, slice(49990, 50000))
+    assert features.shape == (10, 3, 32, 32)
+    assert targets.shape == (10, 1)
+    train.close(handle)
 
-    first_feature, first_target = cifar10_train.get_data(request=[0])
-    assert first_feature.shape == (1, 3072)
-    assert first_feature.dtype.kind == 'f'
-    assert first_target.shape == (1, 1)
-    assert first_target.dtype is numpy.dtype('uint8')
+    test = CIFAR10(('test',), load_in_memory=False)
+    handle = test.open()
+    features, targets = test.get_data(handle, slice(0, 10))
+    assert features.shape == (10, 3, 32, 32)
+    assert targets.shape == (10, 1)
+    assert features.dtype == numpy.uint8
+    assert targets.dtype == numpy.uint8
+    test.close(handle)
 
-    first_target, = cifar10_test.get_data(request=[0, 1])
-    assert first_target.shape == (2, 1)
+    stream = DataStream.default_stream(
+        test, iteration_scheme=SequentialScheme(10, 10))
+    data = next(stream.get_epoch_iterator())[0]
+    assert data.min() >= 0.0 and data.max() <= 1.0
+    assert data.dtype == config.floatX
 
-    assert_raises(ValueError, CIFAR10, 'valid')
-
-    cifar10_test = cPickle.loads(cPickle.dumps(cifar10_test))
-    assert len(cifar10_test.targets) == 10000
-
-    cifar_10_test_unflattened = CIFAR10('test', flatten=False)
-    cifar_10_test_unflattened.features.shape == (10000, 3, 32, 32)
+    assert_raises(ValueError, CIFAR10, ('valid',))
