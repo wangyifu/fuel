@@ -1,5 +1,8 @@
 """
 A simplified version of the svh converter wihtout bounding box
+it looks for JPG images in the file `train.tar.gz` and `test.tar.gz`
+that are of the size 64x64 with 3 channgels
+and ignores everything else
 """
 import os
 import tarfile
@@ -18,11 +21,9 @@ from fuel.converters.base import fill_hdf5_file, check_exists, progress_bar
 from fuel.datasets import H5PYDataset
 
 
-FORMAT_1_FILES = ['{}.tar.gz'.format(s) for s in ['train']]
-FORMAT_1_TRAIN_FILE,  = FORMAT_1_FILES
+FORMAT_1_FILES = ['{}.tar.gz'.format(s) for s in ['train', 'test']]
 
-
-@check_exists(required_files=FORMAT_1_FILES)
+@check_exists(required_files=FORMAT_1_FILES[:1])
 def convert_jpgtgz(directory, output_directory,
                  output_filename=None):
     """Converts jpg tar.gz dataset to HDF5.
@@ -58,7 +59,7 @@ def convert_jpgtgz(directory, output_directory,
             'features': ('channel', 'height', 'width'),
         }
 
-        splits = ('train',)
+        splits = ('train','test')
         file_paths = dict(zip(splits, FORMAT_1_FILES))
         for split, path in file_paths.items():
             file_paths[split] = os.path.join(directory, path)
@@ -74,23 +75,32 @@ def convert_jpgtgz(directory, output_directory,
                 progress_bar_context = progress_bar(
                     name='{} file'.format(split), maxval=len(members),
                     prefix='Extracting')
+                num_examples = 0
                 with progress_bar_context as bar:
                     for i, member in enumerate(members):
                         if (member.name.endswith('.jpg') and not
                         os.path.basename(member.name).startswith('.')):
                             f.extract(member, path=os.path.join(TMPDIR,split))
                         bar.update(i)
+                        num_examples += 1
+
+                progress_bar_context = progress_bar(
+                    name='{} file'.format(split), maxval=num_examples,
+                    prefix='Validating')
                 num_examples = 0
-                for root, dirs, files in os.walk(os.path.join(TMPDIR,split)):
-                    for file in files:
-                        if file.endswith('.jpg') and not file.startswith('.'):
-                            image_path = os.path.join(root, file)
-                            try:
-                                im = Image.open(image_path)
-                                assert im.shape == (64,64,3), im.shape
-                                num_examples += 1
-                            except:
-                                os.remove(image_path)
+                with progress_bar_context as bar:
+                    for root, dirs, files in os.walk(os.path.join(TMPDIR,split)):
+                        for file in files:
+                            if file.endswith('.jpg') and not file.startswith('.'):
+                                image_path = os.path.join(root, file)
+                                try:
+                                    im = Image.open(image_path)
+                                    im = numpy.asarray(im)
+                                    assert im.shape == (64,64,3), 'Images should be 64x64 RGB and not '+str(im.shape)
+                                    num_examples += 1
+                                    bar.update(num_examples)
+                                except:
+                                    os.remove(image_path)
             return num_examples
 
         examples_per_split = OrderedDict(
