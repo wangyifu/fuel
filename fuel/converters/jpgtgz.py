@@ -19,7 +19,7 @@ from PIL import Image
 
 from fuel.converters.base import fill_hdf5_file, check_exists, progress_bar
 from fuel.datasets import H5PYDataset
-
+import hashlib
 
 FORMAT_1_FILES = ['{}.tar.gz'.format(s) for s in ['train', 'test']]
 
@@ -69,6 +69,7 @@ def convert_jpgtgz(directory, output_directory,
         # extracted individually, which allows to display a progress bar. Since
         # the splits will be concatenated in the HDF5 file, we also compute the
         # start and stop intervals of each split within the concatenated array.
+        checksums = set([])
         def extract_tar(split):
             with tarfile.open(file_paths[split], 'r:gz') as f:
                 members = f.getmembers()
@@ -88,19 +89,32 @@ def convert_jpgtgz(directory, output_directory,
                     name='{} file'.format(split), maxval=num_examples,
                     prefix='Validating')
                 num_examples = 0
+                bad_examples = 0
+                duplicate_examples = 0
+                count = 0
                 with progress_bar_context as bar:
                     for root, dirs, files in os.walk(os.path.join(TMPDIR,split)):
                         for file in files:
                             if file.endswith('.jpg') and not file.startswith('.'):
                                 image_path = os.path.join(root, file)
-                                try:
-                                    im = Image.open(image_path)
-                                    im = numpy.asarray(im)
-                                    assert im.shape == (64,64,3), 'Images should be 64x64 RGB and not '+str(im.shape)
-                                    num_examples += 1
-                                    bar.update(num_examples)
-                                except:
+                                im = Image.open(image_path)
+                                im = numpy.asarray(im)
+                                m = hashlib.md5()
+                                m.update(im)
+                                h = m.hexdigest()
+                                count += 1
+
+                                if im.shape != (64,64,3):
+                                    bad_examples += 1
                                     os.remove(image_path)
+                                elif h  in checksums:
+                                    duplicate_examples += 1
+                                    os.remove(image_path)
+                                else:
+                                    checksums.add(h)
+                                    num_examples += 1
+                                bar.update(count)
+                print('count=%d bad=%d dup=%d good=%d'%(count, bad_examples, duplicate_examples, num_examples))
             return num_examples
 
         examples_per_split = OrderedDict(
