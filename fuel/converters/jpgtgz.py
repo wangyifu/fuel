@@ -1,8 +1,10 @@
 """
-A simplified version of the svh converter wihtout bounding box
-it looks for JPG images in the file `train.tar.gz` and `test.tar.gz`
+Looks for `.jpg` images in the file `train.tar.gz` and `test.tar.gz`
 that are of the size 64x64 with 3 channgels
-and ignores everything else
+and ignores everything else.
+Use hash to check that each image appears only once (no duplicated samples
+and no overlap between train and test.)
+The images are stored as 3x64x64
 """
 import os
 import tarfile
@@ -71,6 +73,7 @@ def convert_jpgtgz(directory, output_directory,
         # start and stop intervals of each split within the concatenated array.
         checksums = set([])
         def extract_tar(split):
+            jpgfiles = []
             with tarfile.open(file_paths[split], 'r:gz') as f:
                 members = f.getmembers()
                 progress_bar_context = progress_bar(
@@ -84,6 +87,7 @@ def convert_jpgtgz(directory, output_directory,
                             f.extract(member, path=os.path.join(TMPDIR,split))
                         bar.update(i)
                         num_examples += 1
+                print('#files=%d'%num_examples)
 
                 progress_bar_context = progress_bar(
                     name='{} file'.format(split), maxval=num_examples,
@@ -92,35 +96,42 @@ def convert_jpgtgz(directory, output_directory,
                 bad_examples = 0
                 duplicate_examples = 0
                 count = 0
+                errors = 0
                 with progress_bar_context as bar:
                     for root, dirs, files in os.walk(os.path.join(TMPDIR,split)):
                         for file in files:
                             if file.endswith('.jpg') and not file.startswith('.'):
                                 image_path = os.path.join(root, file)
-                                im = Image.open(image_path)
-                                im = numpy.asarray(im)
-                                m = hashlib.md5()
-                                m.update(im)
-                                h = m.hexdigest()
                                 count += 1
+                                try:
+                                    im = Image.open(image_path)
+                                    im = numpy.asarray(im)
+                                    m = hashlib.md5()
+                                    m.update(im)
+                                    h = m.hexdigest()
 
-                                if im.shape != (64,64,3):
-                                    bad_examples += 1
-                                    os.remove(image_path)
-                                elif h  in checksums:
-                                    duplicate_examples += 1
-                                    os.remove(image_path)
-                                else:
-                                    checksums.add(h)
-                                    num_examples += 1
+                                    if im.shape != (64,64,3):
+                                        bad_examples += 1
+                                        os.remove(image_path)
+                                    elif h  in checksums:
+                                        duplicate_examples += 1
+                                        os.remove(image_path)
+                                    else:
+                                        checksums.add(h)
+                                        num_examples += 1
+                                        jpgfiles.append(image_path)
+                                except:
+                                    errors += 1
                                 bar.update(count)
-                print('count=%d bad=%d dup=%d good=%d'%(count, bad_examples, duplicate_examples, num_examples))
-            return num_examples
+                print('count=%d bad=%d dup=%d good=%d errors=%d'%(
+                    count, bad_examples, duplicate_examples,
+                    num_examples, errors))
+            return jpgfiles
 
         examples_per_split = OrderedDict(
             [(split, extract_tar(split)) for split in splits])
         cumulative_num_examples = numpy.cumsum(
-            [0] + list(examples_per_split.values()))
+            [0] + list(map(len,examples_per_split.values())))
         num_examples = cumulative_num_examples[-1]
         intervals = zip(cumulative_num_examples[:-1],
                         cumulative_num_examples[1:])
@@ -175,15 +186,7 @@ def convert_jpgtgz(directory, output_directory,
 
         # The final step is to fill the HDF5 file.
         def fill_split(split, bar=None):
-            jpgfiles = []
-            for root, dirs, files in os.walk(os.path.join(TMPDIR,split)):
-                for file in files:
-                    if file.endswith('.jpg') and not file.startswith('.'):
-                        jpgfiles.append(os.path.join(root,file))
-            assert len(jpgfiles) == examples_per_split[split],'%d %d'%(len(jpgfiles), examples_per_split[split])
-
-            for image_number in range(examples_per_split[split]):
-                image_path = jpgfiles[image_number]
+            for image_number, image_path in enumerate(examples_per_split[split]):
                 image = numpy.asarray(
                     Image.open(image_path)).transpose(2, 0, 1)
                 index = image_number + split_intervals[split][0]
