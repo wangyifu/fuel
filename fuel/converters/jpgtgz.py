@@ -54,6 +54,7 @@ def convert_jpgtgz(directory, output_directory,
         output_path = os.path.join(output_directory, output_filename)
         h5file = h5py.File(output_path, mode='w')
         TMPDIR = tempfile.mkdtemp()
+        allshape = None
 
         sources = ('features',)
         source_dtypes = dict([(source, 'uint8') for source in sources])
@@ -110,7 +111,9 @@ def convert_jpgtgz(directory, output_directory,
                                     m.update(im)
                                     h = m.hexdigest()
 
-                                    if im.shape != (64,64,3):
+                                    if allshape is None:
+                                        allshape = im.shape
+                                    if im.shape != allshape:
                                         bad_examples += 1
                                         os.remove(image_path)
                                     elif h  in checksums:
@@ -220,4 +223,7 @@ def fill_subparser(subparser):
         Subparser handling the `jpg` command.
 
     """
+    # subparser.add_argument('-N', type=int,
+    #                 default=64,
+    #                help='image size')
     return convert_jpgtgz
