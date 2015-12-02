@@ -25,7 +25,7 @@ import hashlib
 
 FORMAT_1_FILES = ['{}.tar.gz'.format(s) for s in ['train', 'test']]
 
-@check_exists(required_files=FORMAT_1_FILES[:1])
+# @check_exists(required_files=FORMAT_1_FILES[:1])
 def convert_jpgtgz(directory, output_directory,
                  output_filename=None):
     """Converts jpg tar.gz dataset to HDF5.
