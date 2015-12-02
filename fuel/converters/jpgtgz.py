@@ -90,7 +90,7 @@ def convert_jpgtgz(directory, output_directory,
                             num_examples += 1
                 DIR = TMPDIR
             else:
-                DIR = file_paths[split]
+                DIR = directory
                 for root, dirs, files in os.walk(os.path.join(DIR,split)):
                     for file in files:
                         if file.endswith('.jpg') and not file.startswith('.'):
