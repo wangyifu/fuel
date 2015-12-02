@@ -74,61 +74,69 @@ def convert_jpgtgz(directory, output_directory,
         # start and stop intervals of each split within the concatenated array.
         checksums = set([])
         def extract_tar(split):
+            num_examples = 0
+            if file_paths[split].endswith('.tgz'):
+                with tarfile.open(file_paths[split], 'r:gz') as f:
+                    members = f.getmembers()
+                    progress_bar_context = progress_bar(
+                        name='{} file'.format(split), maxval=len(members),
+                        prefix='Extracting')
+                    with progress_bar_context as bar:
+                        for i, member in enumerate(members):
+                            if (member.name.endswith('.jpg') and not
+                            os.path.basename(member.name).startswith('.')):
+                                f.extract(member, path=os.path.join(TMPDIR,split))
+                            bar.update(i)
+                            num_examples += 1
+                DIR = TMPDIR
+            else:
+                DIR = file_paths[split]
+                for root, dirs, files in os.walk(os.path.join(DIR,split)):
+                    for file in files:
+                        if file.endswith('.jpg') and not file.startswith('.'):
+                            num_examples += 1
+            print('#files=%d'%num_examples)
+
             jpgfiles = []
-            with tarfile.open(file_paths[split], 'r:gz') as f:
-                members = f.getmembers()
-                progress_bar_context = progress_bar(
-                    name='{} file'.format(split), maxval=len(members),
-                    prefix='Extracting')
-                num_examples = 0
-                with progress_bar_context as bar:
-                    for i, member in enumerate(members):
-                        if (member.name.endswith('.jpg') and not
-                        os.path.basename(member.name).startswith('.')):
-                            f.extract(member, path=os.path.join(TMPDIR,split))
-                        bar.update(i)
-                        num_examples += 1
-                print('#files=%d'%num_examples)
+            progress_bar_context = progress_bar(
+                name='{} file'.format(split), maxval=num_examples,
+                prefix='Validating')
+            num_examples = 0
+            bad_examples = 0
+            duplicate_examples = 0
+            count = 0
+            errors = 0
+            with progress_bar_context as bar:
+                for root, dirs, files in os.walk(os.path.join(DIR,split)):
+                    for file in files:
+                        if file.endswith('.jpg') and not file.startswith('.'):
+                            image_path = os.path.join(root, file)
+                            count += 1
+                            try:
+                                im = Image.open(image_path)
+                                im = numpy.asarray(im)
+                                m = hashlib.md5()
+                                m.update(im)
+                                h = m.hexdigest()
 
-                progress_bar_context = progress_bar(
-                    name='{} file'.format(split), maxval=num_examples,
-                    prefix='Validating')
-                num_examples = 0
-                bad_examples = 0
-                duplicate_examples = 0
-                count = 0
-                errors = 0
-                with progress_bar_context as bar:
-                    for root, dirs, files in os.walk(os.path.join(TMPDIR,split)):
-                        for file in files:
-                            if file.endswith('.jpg') and not file.startswith('.'):
-                                image_path = os.path.join(root, file)
-                                count += 1
-                                try:
-                                    im = Image.open(image_path)
-                                    im = numpy.asarray(im)
-                                    m = hashlib.md5()
-                                    m.update(im)
-                                    h = m.hexdigest()
-
-                                    if allshape is None:
-                                        allshape = im.shape
-                                    if im.shape != allshape:
-                                        bad_examples += 1
-                                        os.remove(image_path)
-                                    elif h  in checksums:
-                                        duplicate_examples += 1
-                                        os.remove(image_path)
-                                    else:
-                                        checksums.add(h)
-                                        num_examples += 1
-                                        jpgfiles.append(image_path)
-                                except:
-                                    errors += 1
-                                bar.update(count)
-                print('count=%d bad=%d dup=%d good=%d errors=%d'%(
-                    count, bad_examples, duplicate_examples,
-                    num_examples, errors))
+                                if allshape is None:
+                                    allshape = im.shape
+                                if im.shape != allshape:
+                                    bad_examples += 1
+                                    os.remove(image_path)
+                                elif h  in checksums:
+                                    duplicate_examples += 1
+                                    os.remove(image_path)
+                                else:
+                                    checksums.add(h)
+                                    num_examples += 1
+                                    jpgfiles.append(image_path)
+                            except:
+                                errors += 1
+                            bar.update(count)
+            print('count=%d bad=%d dup=%d good=%d errors=%d'%(
+                count, bad_examples, duplicate_examples,
+                num_examples, errors))
             return jpgfiles
 
         examples_per_split = OrderedDict(
