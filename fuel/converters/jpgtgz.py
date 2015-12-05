@@ -1,10 +1,18 @@
 """
 Looks for `.jpg` images in the file `train.tar.gz` and `test.tar.gz`
-that are of the size 64x64 with 3 channgels
-and ignores everything else.
+all images should have the same shape as the first image
+ignores everything else.
 Use hash to check that each image appears only once (no duplicated samples
 and no overlap between train and test.)
-The images are stored as 3x64x64
+The images are stored in the "features" source
+
+If a train.taregt.csv (or test.target.csv) file exists
+it is read, the "name" column should match the basename of the image
+(without any path and without the .jpg extension)
+if a match is found for an image then
+the "target" column is copied as (target,1)
+if there is no match then (0,0) is copied
+into the "targets" source
 """
 import os
 import tarfile
@@ -14,6 +22,7 @@ from collections import namedtuple, OrderedDict
 
 import h5py
 import numpy
+import pandas as pd
 from scipy.io import loadmat
 from six import iteritems
 from six.moves import range, zip
@@ -24,9 +33,12 @@ from fuel.datasets import H5PYDataset
 import hashlib
 
 FORMAT_1_FILES = ['{}.tar.gz'.format(s) for s in ['train', 'test']]
+TARGET_FILES = ['{}.target.csv'.format(s) for s in ['train', 'test']]
+
+S = None
 
 # @check_exists(required_files=FORMAT_1_FILES[:1])
-def convert_jpgtgz(directory, output_directory,
+def convert_jpgtgz(target, directory, output_directory,
                  output_filename=None):
     """Converts jpg tar.gz dataset to HDF5.
 
@@ -34,6 +46,9 @@ def convert_jpgtgz(directory, output_directory,
 
     Parameters
     ----------
+    target: bool
+        Also addd a targets source to the file.
+        The targets are computed based on train/test.target.csv
     directory : str
         Directory in which input files reside.
     output_directory : str
@@ -47,25 +62,30 @@ def convert_jpgtgz(directory, output_directory,
         Single-element tuple containing the path to the converted dataset.
 
     """
+    dotarget = target
     if not output_filename:
         output_filename = 'jpg.hdf5'
 
+    output_path = os.path.join(output_directory, output_filename)
+    h5file = h5py.File(output_path, mode='w')
     try:
-        output_path = os.path.join(output_directory, output_filename)
-        h5file = h5py.File(output_path, mode='w')
         TMPDIR = tempfile.mkdtemp()
-        allshape = None
 
-        sources = ('features',)
+        sources = ('features','targets') if dotarget else ('features',)
         source_dtypes = dict([(source, 'uint8') for source in sources])
         source_axis_labels = {
             'features': ('channel', 'height', 'width'),
+            'targets': ('index',),  # this will have two values 0-target 1-mask saying if the target should be used
         }
 
         splits = ('train','test')
         file_paths = dict(zip(splits, FORMAT_1_FILES))
         for split, path in file_paths.items():
             file_paths[split] = os.path.join(directory, path)
+
+        target_paths = dict(zip(splits, TARGET_FILES))
+        for split, path in target_paths.items():
+            target_paths[split] = os.path.join(directory, path)
 
         # We first extract the data files in a temporary directory. While doing
         # that, we also count the number of examples for each split. Files are
@@ -75,26 +95,31 @@ def convert_jpgtgz(directory, output_directory,
         checksums = set([])
         def extract_tar(split):
             num_examples = 0
-            if file_paths[split].endswith('.tgz'):
-                with tarfile.open(file_paths[split], 'r:gz') as f:
+            path = file_paths[split]
+            if os.path.isfile(path):
+                with tarfile.open(path, 'r:gz') as f:
                     members = f.getmembers()
                     progress_bar_context = progress_bar(
                         name='{} file'.format(split), maxval=len(members),
                         prefix='Extracting')
                     with progress_bar_context as bar:
                         for i, member in enumerate(members):
-                            if (member.name.endswith('.jpg') and not
-                            os.path.basename(member.name).startswith('.')):
+                            if ((member.name.endswith('.jpg') and not
+                            os.path.basename(member.name).startswith('.'))):
                                 f.extract(member, path=os.path.join(TMPDIR,split))
+                                num_examples += 1
                             bar.update(i)
-                            num_examples += 1
                 DIR = TMPDIR
-            else:
-                DIR = directory
-                for root, dirs, files in os.walk(os.path.join(DIR,split)):
+            elif os.path.isdir(path):
+                print("reading DIRECTORY %s"%path)
+                DIR = path
+                for root, dirs, files in os.walk(path):
                     for file in files:
                         if file.endswith('.jpg') and not file.startswith('.'):
                             num_examples += 1
+            else:
+                print("No file or directory named %s"%path)
+                return [], None
             print('#files=%d'%num_examples)
 
             jpgfiles = []
@@ -106,6 +131,7 @@ def convert_jpgtgz(directory, output_directory,
             duplicate_examples = 0
             count = 0
             errors = 0
+            shape = None  # all images must have the same shape
             with progress_bar_context as bar:
                 for root, dirs, files in os.walk(os.path.join(DIR,split)):
                     for file in files:
@@ -119,9 +145,9 @@ def convert_jpgtgz(directory, output_directory,
                                 m.update(im)
                                 h = m.hexdigest()
 
-                                if allshape is None:
-                                    allshape = im.shape
-                                if im.shape != allshape:
+                                if shape is None:
+                                    shape = im.shape
+                                if im.shape != shape:
                                     bad_examples += 1
                                     os.remove(image_path)
                                 elif h  in checksums:
@@ -137,12 +163,12 @@ def convert_jpgtgz(directory, output_directory,
             print('count=%d bad=%d dup=%d good=%d errors=%d'%(
                 count, bad_examples, duplicate_examples,
                 num_examples, errors))
-            return jpgfiles
+            return jpgfiles, shape
 
         examples_per_split = OrderedDict(
             [(split, extract_tar(split)) for split in splits])
         cumulative_num_examples = numpy.cumsum(
-            [0] + list(map(len,examples_per_split.values())))
+            [0] + list(map(lambda x: len(x[0]),examples_per_split.values())))
         num_examples = cumulative_num_examples[-1]
         intervals = zip(cumulative_num_examples[:-1],
                         cumulative_num_examples[1:])
@@ -164,52 +190,59 @@ def convert_jpgtgz(directory, output_directory,
         # store data sources and datasets to store auxiliary information
         # (namely the shapes for variable-length axes, and labels to indicate
         # what these variable-length axes represent).
-        def make_vlen_dataset(source):
-            # Create a variable-length 1D dataset
-            dtype = h5py.special_dtype(vlen=numpy.dtype(source_dtypes[source]))
+        def make_vlen_dataset(source, shape):
+            dtype = source_dtypes[source]
+            shape = (num_examples,)+shape
+            print("creating %s %s %s"%(source,str(shape),str(dtype)))
             dataset = h5file.create_dataset(
-                source, (num_examples,), dtype=dtype)
-            # Create a dataset to store variable-length shapes.
-            axis_labels = source_axis_labels[source]
-            dataset_shapes = h5file.create_dataset(
-                '{}_shapes'.format(source), (num_examples, len(axis_labels)),
-                dtype='uint16')
-            # Create a dataset to store labels for variable-length axes.
-            dataset_vlen_axis_labels = h5file.create_dataset(
-                '{}_vlen_axis_labels'.format(source), (len(axis_labels),),
-                dtype='S{}'.format(
-                    numpy.max([len(label) for label in axis_labels])))
-            # Fill variable-length axis labels
-            dataset_vlen_axis_labels[...] = [
-                label.encode('utf8') for label in axis_labels]
-            # Attach auxiliary datasets as dimension scales of the
-            # variable-length 1D dataset. This is in accordance with the
-            # H5PYDataset interface.
-            dataset.dims.create_scale(dataset_shapes, 'shapes')
-            dataset.dims[0].attach_scale(dataset_shapes)
-            dataset.dims.create_scale(dataset_vlen_axis_labels, 'shape_labels')
-            dataset.dims[0].attach_scale(dataset_vlen_axis_labels)
+                source, shape, dtype=dtype)
             # Tag fixed-length axis with its label
             dataset.dims[0].label = 'batch'
+            for i, label in enumerate(source_axis_labels[source]):
+                dataset.dims[i+1].label = label
+
+        shapes = filter(None,map(lambda x: x[1],examples_per_split.values()))
+        assert len(set(shapes)) == 1, "splits have different image size %s"%shapes
+        print('Images shape %s'%str(shapes[0]))
+
+        source_shape = {'features':shapes[0], 'targets':(2,)}
 
         for source in sources:
-            make_vlen_dataset(source)
+            make_vlen_dataset(source, source_shape[source])
 
         # The final step is to fill the HDF5 file.
         def fill_split(split, bar=None):
-            for image_number, image_path in enumerate(examples_per_split[split]):
-                image = numpy.asarray(
-                    Image.open(image_path)).transpose(2, 0, 1)
+            print(split)
+            try:
+                targets = pd.read_csv(target_paths[split], index_col='name')
+            except:
+                targets = None
+
+            image_count = target_count = 0
+            for image_number, image_path in enumerate(examples_per_split[split][0]):
+                image = numpy.asarray(Image.open(image_path))
                 index = image_number + split_intervals[split][0]
 
-                h5file['features'][index] = image.flatten()
-                h5file['features'].dims[0]['shapes'][index] = image.shape
+                h5file['features'][index] = image
+                image_count += 1
+
+                try:
+                    root_basename = os.path.splitext(os.path.basename(image_path))[0]
+                    target = targets.loc[root_basename].target
+                    mask = 1
+                except:
+                    target = 0
+                    mask = 0
+
+                if dotarget:
+                    h5file['targets'][index] = numpy.array([target,mask])
+                target_count += mask
 
                 if image_number % 1000 == 0:
                     h5file.flush()
                 if bar:
                     bar.update(index)
-
+            print('# targets %d out of %d'%(target_count, image_count))
         with progress_bar('jpgtgz', num_examples) as bar:
             for split in splits:
                 fill_split(split, bar=bar)
@@ -231,7 +264,6 @@ def fill_subparser(subparser):
         Subparser handling the `jpg` command.
 
     """
-    # subparser.add_argument('-N', type=int,
-    #                 default=64,
-    #                help='image size')
+    subparser.add_argument('--target', action='store_true',
+                    help='add a targets source based on train/test.target.csv')
     return convert_jpgtgz
