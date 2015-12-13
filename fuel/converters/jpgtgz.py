@@ -38,7 +38,7 @@ TARGET_FILES = ['{}.target.csv'.format(s) for s in ['train', 'test']]
 S = None
 
 # @check_exists(required_files=FORMAT_1_FILES[:1])
-def convert_jpgtgz(target, directory, output_directory,
+def convert_jpgtgz(target, onlytarget, directory, output_directory,
                  output_filename=None):
     """Converts jpg tar.gz dataset to HDF5.
 
@@ -48,7 +48,12 @@ def convert_jpgtgz(target, directory, output_directory,
     ----------
     target: bool
         Also addd a targets source to the file.
-        The targets are computed based on train/test.target.csv
+        The targets are computed based on train/test.target.csv.
+        Each image receive two values [0] - is the target value and
+        [1] - is a mask bit saying if a target is at all defined for the image
+    onlytarget: bool
+        same as target but dont take images that dont have a target value defined.
+        there is no mask
     directory : str
         Directory in which input files reside.
     output_directory : str
@@ -62,7 +67,10 @@ def convert_jpgtgz(target, directory, output_directory,
         Single-element tuple containing the path to the converted dataset.
 
     """
-    dotarget = target
+    dotarget = target | onlytarget
+    # if onlytarget then there is just one value otherwise
+    # this will have two values 0-target 1-mask saying if the target should be used
+    target_dim = 1 if onlytarget else 2
     if not output_filename:
         output_filename = 'jpg.hdf5'
 
@@ -75,7 +83,7 @@ def convert_jpgtgz(target, directory, output_directory,
         source_dtypes = dict([(source, 'uint8') for source in sources])
         source_axis_labels = {
             'features': ('channel', 'height', 'width'),
-            'targets': ('index',),  # this will have two values 0-target 1-mask saying if the target should be used
+            'targets': ('index',),
         }
 
         splits = ('train','test')
@@ -86,6 +94,25 @@ def convert_jpgtgz(target, directory, output_directory,
         target_paths = dict(zip(splits, TARGET_FILES))
         for split, path in target_paths.items():
             target_paths[split] = os.path.join(directory, path)
+
+        split_targets = {}
+        for split in splits:
+            try:
+                targets = pd.read_csv(target_paths[split], index_col='name')
+            except:
+                targets = None
+            split_targets[split] = targets
+
+        def get_target(image_path, split):
+            try:
+                root_basename = os.path.splitext(os.path.basename(image_path))[0]
+                target = split_targets[split].loc[root_basename].target
+                mask = 1
+            except:
+                target = 0
+                mask = 0
+            return target, mask
+
 
         # We first extract the data files in a temporary directory. While doing
         # that, we also count the number of examples for each split. Files are
@@ -163,6 +190,10 @@ def convert_jpgtgz(target, directory, output_directory,
             print('count=%d bad=%d dup=%d good=%d errors=%d'%(
                 count, bad_examples, duplicate_examples,
                 num_examples, errors))
+
+            if onlytarget:
+                jpgfiles = filter(lambda x: get_target(image_path, split)[1],
+                                  jpgfiles)
             return jpgfiles, shape
 
         examples_per_split = OrderedDict(
@@ -205,7 +236,7 @@ def convert_jpgtgz(target, directory, output_directory,
         assert len(set(shapes)) == 1, "splits have different image size %s"%shapes
         print('Images shape %s'%str(shapes[0]))
 
-        source_shape = {'features':shapes[0], 'targets':(2,)}
+        source_shape = {'features':shapes[0], 'targets':(target_dim,)}
 
         for source in sources:
             make_vlen_dataset(source, source_shape[source])
@@ -213,10 +244,6 @@ def convert_jpgtgz(target, directory, output_directory,
         # The final step is to fill the HDF5 file.
         def fill_split(split, bar=None):
             print(split)
-            try:
-                targets = pd.read_csv(target_paths[split], index_col='name')
-            except:
-                targets = None
 
             image_count = target_count = 0
             for image_number, image_path in enumerate(examples_per_split[split][0]):
@@ -226,16 +253,13 @@ def convert_jpgtgz(target, directory, output_directory,
                 h5file['features'][index] = image
                 image_count += 1
 
-                try:
-                    root_basename = os.path.splitext(os.path.basename(image_path))[0]
-                    target = targets.loc[root_basename].target
-                    mask = 1
-                except:
-                    target = 0
-                    mask = 0
+                target, mask = get_target(image_path, split)
 
                 if dotarget:
-                    h5file['targets'][index] = numpy.array([target,mask])
+                    if onlytarget:
+                        h5file['targets'][index] = numpy.array([target,])
+                    else:
+                        h5file['targets'][index] = numpy.array([target,mask])
                 target_count += mask
 
                 if image_number % 1000 == 0:
@@ -266,4 +290,7 @@ def fill_subparser(subparser):
     """
     subparser.add_argument('--target', action='store_true',
                     help='add a targets source based on train/test.target.csv')
+    subparser.add_argument('--onlytarget', action='store_true',
+                    help='add a targets source based on train/test.target.csv.'
+                         ' filter out images that dont have a target')
     return convert_jpgtgz
