@@ -36,9 +36,6 @@ all_converters = (
     ('iris', iris.fill_subparser),
     ('mnist', mnist.fill_subparser),
     ('svhn', svhn.fill_subparser),
-<<<<<<< HEAD
     ('jpgtgz', jpgtgz.fill_subparser))
-=======
     ('ilsvrc2010', ilsvrc2010.fill_subparser),
     ('youtube_audio', youtube_audio.fill_subparser))
->>>>>>> upstream/master
